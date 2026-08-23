@@ -1,0 +1,231 @@
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  const SOON = [];
+  const mods = [...document.querySelectorAll('.module')];
+  let IDX = [];
+
+  // Normalisierung für Suche
+  function norm(s) {
+    return s.toLowerCase()
+      .replace(/ä/g, 'a').replace(/ö/g, 'o').replace(/ü/g, 'u').replace(/ß/g, 'ss')
+      .replace(/[^\w\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+
+  // Index aufbauen
+  mods.forEach(m => {
+    const num = m.dataset.num;
+    const title = m.dataset.title.replace(/&amp;/g, '&');
+    const kw = m.dataset.keywords || '';
+    IDX.push({
+      mid: m.id, num, title, head: title,
+      txt: norm(m.textContent).slice(0, 4000),
+      kw: norm(kw),
+      anchor: null, type: 'mod',
+      snip: m.querySelector('.mdesc').textContent
+    });
+
+    // Überschriften (h2, h3) indizieren
+    let c = 0;
+    m.querySelectorAll('h2, h3').forEach(h => {
+      const id = m.id + '-h' + (c++);
+      h.id = id;
+      let t = '', n = h.nextElementSibling;
+      while (n && !/^H[23]$/.test(n.tagName)) {
+        t += ' ' + n.textContent;
+        n = n.nextElementSibling;
+      }
+      IDX.push({
+        mid: m.id, num, title, head: h.textContent,
+        txt: norm(t).slice(0, 2500), kw: norm(kw),
+        anchor: id, type: 'sec',
+        snip: t.trim().replace(/\s+/g, ' ').slice(0, 155)
+      });
+    });
+
+    // FAQs indizieren
+    m.querySelectorAll('.qa').forEach((qa, i) => {
+      const id = m.id + '-q' + i;
+      qa.id = id;
+      const q = qa.querySelector('.q').textContent;
+      const a = qa.querySelector('p:last-child').textContent;
+      IDX.push({
+        mid: m.id, num, title, head: q,
+        txt: norm(a), kw: norm(kw),
+        anchor: id, type: 'faq',
+        snip: a.trim().replace(/\s+/g, ' ').slice(0, 155)
+      });
+    });
+  });
+
+  // Bewertung der Treffer
+  function score(it, w) {
+    const h = norm(it.head), qb = it.type === 'faq' ? 2.2 : 1;
+    let s = 0;
+    w.forEach(t => {
+      if (h.includes(t)) s += 45 * qb;
+      if (it.kw.includes(t)) s += 22;
+      if (it.txt.includes(t)) s += 7;
+      if (it.type === 'mod' && norm(it.title).includes(t)) s += 30;
+    });
+    if (h.includes(w.join(' '))) s += 70 * qb;
+    return s;
+  }
+
+  // Highlighting der Suchbegriffe
+  function hl(txt, w) {
+    let o = txt;
+    w.forEach(t => {
+      if (t.length < 3) return;
+      o = o.replace(
+        new RegExp('(' + t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi'),
+        '<mark>$1</mark>'
+      );
+    });
+    return o;
+  }
+
+  // Suchfunktion
+  function search() {
+    const raw = document.getElementById('q').value.trim();
+    const R = document.getElementById('results');
+    const H = document.getElementById('home');
+    document.getElementById('clr').style.display = raw ? 'block' : 'none';
+
+    if (raw.length < 2) {
+      R.style.display = 'none';
+      if (!location.hash) H.style.display = 'block';
+      return;
+    }
+
+    const w = norm(raw).split(' ').filter(t => t.length > 1);
+    if (!w.length) {
+      R.style.display = 'none';
+      return;
+    }
+
+    const hits = IDX
+      .map(it => ({ it, s: score(it, w) }))
+      .filter(x => x.s > 18)
+      .sort((a, b) => b.s - a.s);
+
+    const seen = new Set(), out = [];
+    hits.forEach(x => {
+      const k = x.it.mid + '|' + x.it.head;
+      if (seen.has(k) || out.length >= 9) return;
+      seen.add(k);
+      out.push(x.it);
+    });
+
+    mods.forEach(m => m.classList.remove('active'));
+    H.style.display = 'none';
+    R.style.display = 'block';
+
+    if (!out.length) {
+      R.innerHTML =
+        '<div class="nores"><p>Keine Treffer für <strong>„' +
+        raw.replace(/</g, '&lt;') +
+        '“</strong>.</p>' +
+        '<p>Vielleicht steht es in einem Modul, das noch nicht fertig ist – oder es fehlt im Playbook.</p>' +
+        '<p style="margin-top:12px"><strong>Frag in der Sprechstunde</strong> (Mi 20–22 Uhr, telefonisch, Anmeldung per WhatsApp)<br>' +
+        'oder per Mail an jan-nick.munique@basketball-dresden.org</p></div>';
+      return;
+    }
+
+    R.innerHTML =
+      '<div class="rescount">' + out.length + ' Treffer</div>' +
+      out.map(it =>
+        '<div class="res" onclick="open2(\'' + it.mid + '\',\'' + (it.anchor || '') + '\')">' +
+        '<div class="rm">Modul ' + it.num + ' · ' + it.title + (it.type === 'faq' ? ' · Frage' : '') + '</div>' +
+        '<div class="rt">' + hl(it.head, w) + '</div>' +
+        (it.snip ? '<div class="rs">' + hl(it.snip, w) + '…</div>' : '') +
+        '</div>'
+      ).join('');
+  }
+
+  // Modul öffnen
+  function open2(mid, anchor) {
+    document.getElementById('results').style.display = 'none';
+    document.getElementById('home').style.display = 'none';
+    mods.forEach(m => m.classList.remove('active'));
+    const m = document.getElementById(mid);
+    m.classList.add('active');
+    location.hash = mid; // Ersetzt history.replaceState
+
+    if (anchor) {
+      const el = document.getElementById(anchor);
+      if (el) {
+        el.classList.add('hl');
+        setTimeout(() => el.classList.remove('hl'), 2400);
+        // Fallback für scrollIntoView
+        setTimeout(() => {
+          const elRect = el.getBoundingClientRect();
+          window.scrollTo({ top: window.scrollY + elRect.top - 20, behavior: 'smooth' });
+        }, 60);
+        return;
+      }
+    }
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  // Zur Übersicht zurückkehren
+  function goHome() {
+    document.getElementById('results').style.display = 'none';
+    mods.forEach(m => m.classList.remove('active'));
+    document.getElementById('home').style.display = 'block';
+    document.getElementById('q').value = '';
+    document.getElementById('clr').style.display = 'none';
+    location.hash = ''; // Ersetzt history.replaceState
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  // Suchfeld-Interaktion
+  function setQ(t) {
+    document.getElementById('q').value = t;
+    search();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function clearS() {
+    document.getElementById('q').value = '';
+    search();
+  }
+
+  // Karten und Modulnavigation generieren
+  const gOn = document.getElementById('gridOn');
+  mods.forEach(m => {
+    const d = document.createElement('div');
+    d.className = 'mcard';
+    d.onclick = () => open2(m.id, null);
+    d.innerHTML =
+      '<div class="num">' + m.dataset.num + '</div>' +
+      '<div><h3>' + m.dataset.title + '</h3>' +
+      '<p>' + m.querySelector('.mdesc').textContent + '</p></div>';
+    gOn.appendChild(d);
+  });
+
+  // Modulnavigation (Zurück/Übersicht/Weiter)
+  mods.forEach((m, i) => {
+    const nav = m.querySelector('[data-nav]');
+    let h = '';
+    if (i > 0) h += '<button onclick="open2(\'' + mods[i - 1].id + '\',null)"><small>← Zurück</small>' + mods[i - 1].dataset.title + '</button>';
+    h += '<button onclick="goHome()"><small>Übersicht</small>☰ Alle Module</button>';
+    if (i < mods.length - 1) h += '<button onclick="open2(\'' + mods[i + 1].id + '\',null)"><small>Weiter →</small>' + mods[i + 1].dataset.title + '</button>';
+    nav.innerHTML = h;
+  });
+
+  // Event-Listener für Suchfeld
+  document.getElementById('q').addEventListener('input', search);
+  document.getElementById('q').addEventListener('keydown', e => {
+    if (e.key === 'Escape') clearS();
+    if (e.key === 'Enter') {
+      const f = document.querySelector('.res');
+      if (f) f.click();
+    }
+  });
+
+  // Hash-Initialisierung nach dem Laden
+  if (location.hash && document.getElementById(location.hash.slice(1))) {
+    open2(location.hash.slice(1), null);
+  }
+});
+</script>
